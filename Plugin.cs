@@ -13,7 +13,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.0.0";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.1.0";
         internal static new ManualLogSource Logger;
 
         void Awake()
@@ -89,6 +89,13 @@ namespace JetpackFixes
                 __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
                 Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
             }
+        }
+
+        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
+        [HarmonyPostfix]
+        static void PostJetpackUpdate(JetpackItem __instance, bool ___jetpackActivated)
+        {
+            __instance.isBeingUsed = ___jetpackActivated;
         }
 
         [HarmonyPatch(typeof(PlayerControllerB), nameof(PlayerControllerB.DamagePlayer))]
