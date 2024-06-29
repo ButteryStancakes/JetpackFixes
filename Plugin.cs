@@ -13,7 +13,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.1.0";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.2.0";
         internal static new ManualLogSource Logger;
 
         void Awake()
@@ -48,7 +48,7 @@ namespace JetpackFixes
                 if (codes[i].opcode == OpCodes.Ldc_R4 && (float)codes[i].operand == 10f && codes[i - 1].opcode == OpCodes.Ldfld && (FieldInfo)codes[i - 1].operand == typeof(JetpackItem).GetField("jetpackPower", BindingFlags.Instance | BindingFlags.NonPublic))
                 {
                     codes[i + 1].opcode = OpCodes.Bgt_Un;
-                    Plugin.Logger.LogInfo("Transpiler: Reverse jetpackPower comparison on isGrounded check (allows for sliding)");
+                    Plugin.Logger.LogDebug("Transpiler: Reverse jetpackPower comparison on isGrounded check (allows for sliding)");
                 }
                 // Reduce range of raycast (and remove redundancy with distance check)
                 else if (codes[i].opcode == OpCodes.Ldflda && (FieldInfo)codes[i].operand == typeof(JetpackItem).GetField("rayHit", BindingFlags.Instance | BindingFlags.NonPublic))
@@ -56,13 +56,13 @@ namespace JetpackFixes
                     if (codes[i + 1].opcode == OpCodes.Ldc_R4 && (float)codes[i + 1].operand == 25f)
                     {
                         codes[i + 1].operand = 4f;
-                        Plugin.Logger.LogInfo("Transpiler: Reduce raycast range from 25 to 4");
+                        Plugin.Logger.LogDebug("Transpiler: Reduce raycast range from 25 to 4");
                     }
                     else if (codes[i + 2].opcode == OpCodes.Ldc_R4 && (float)codes[i + 2].operand == 4f)
                     {
                         for (int j = i + 3; j >= i - 1; j--)
                             codes.RemoveAt(j);
-                        Plugin.Logger.LogInfo("Transpiler: Remove 4 unit distance check (redundant)");
+                        Plugin.Logger.LogDebug("Transpiler: Remove 4 unit distance check (redundant)");
                     }
                 }
                 // Replace raycast layer with the new layer mask (prevents player from colliding with self)
@@ -71,7 +71,7 @@ namespace JetpackFixes
                     codes[i].opcode = OpCodes.Ldc_I4;
                     codes[i].operand = (int)allPlayersCollideWithMask;
                     codes.RemoveAt(i - 1);
-                    Plugin.Logger.LogInfo("Transpiler: Player will no longer collide with themselves");
+                    Plugin.Logger.LogDebug("Transpiler: Player will no longer collide with themselves");
                 }
             }
 
@@ -80,14 +80,18 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyPrefix]
-        static void PreJetpackUpdate(JetpackItem __instance, Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
+        static void PreJetpackUpdate(JetpackItem __instance, ref Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
         {
-            // NEW: kills the player if they try to slide across the ground while moving too fast
-            // (this is still a collision taking place while moving at instant-death speeds)
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && ___jetpackPower > 10f && __instance.playerHeldBy.jetpackControls && __instance.playerHeldBy.thisController.isGrounded && ___forces.magnitude > 50f)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && ___jetpackPower > 10f && __instance.playerHeldBy.jetpackControls && ___forces.magnitude > 50f)
             {
-                __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
-                Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
+                // NEW: kills the player if they try to slide across the ground while moving too fast
+                // (this is still a collision taking place while moving at instant-death speeds)
+                if (__instance.playerHeldBy.thisController.isGrounded)
+                {
+                    __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                    Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
+                }
+                // TODO: kills the player if exceeding safe speed at certain altitude (config setting)
             }
         }
 
@@ -107,6 +111,25 @@ namespace JetpackFixes
             {
                 Plugin.Logger.LogInfo($"Player took {damageNumber} \"Gravity\" damage while flying too fast; override with 100 (instant death)");
                 damageNumber = 100;
+            }
+        }
+
+        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.EquipItem))]
+        [HarmonyPostfix]
+        static void PostEquipJetpack(JetpackItem __instance)
+        {
+            // Doppler effect is only meant to apply to audio waves travelling towards or away from the listener (not a jetpack strapped to your back)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController)
+            {
+                __instance.jetpackAudio.dopplerLevel = 0f;
+                __instance.jetpackBeepsAudio.dopplerLevel = 0f;
+                Plugin.Logger.LogInfo("Jetpack held by you, disable doppler effect");
+            }
+            else
+            {
+                __instance.jetpackAudio.dopplerLevel = 1f;
+                __instance.jetpackBeepsAudio.dopplerLevel = 1f;
+                Plugin.Logger.LogInfo("Jetpack held by other player, enable doppler effect");
             }
         }
     }
