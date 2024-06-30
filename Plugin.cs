@@ -1,4 +1,5 @@
 ﻿using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using GameNetcodeStuff;
 using HarmonyLib;
@@ -16,9 +17,17 @@ namespace JetpackFixes
         const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.2.0";
         internal static new ManualLogSource Logger;
 
+        internal static ConfigEntry<bool> configBecomeFirework;
+
         void Awake()
         {
             Logger = base.Logger;
+
+            configBecomeFirework = Config.Bind(
+                "Misc",
+                "BecomeFirework",
+                false,
+                "Enabling this setting will allow you to explode again in mid-air by flying straight upwards at high speeds.");
 
             new Harmony(PLUGIN_GUID).PatchAll();
 
@@ -29,6 +38,10 @@ namespace JetpackFixes
     [HarmonyPatch]
     class JetpackFixesPatches
     {
+        // sort of arbitrary
+        // ~110 Y is roughly how high you can get by the time you reach instant death speed, if you go straight up from the ship's floor in one trip
+        static float SAFE_HEIGHT = 110.55537f;
+
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
         static IEnumerable<CodeInstruction> TransJetpackUpdate(IEnumerable<CodeInstruction> instructions)
@@ -91,7 +104,12 @@ namespace JetpackFixes
                     __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
                     Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
                 }
-                // TODO: kills the player if exceeding safe speed at certain altitude (config setting)
+                // NEW: kills the player if exceeding safe speed at certain altitude (config setting)
+                else if (Plugin.configBecomeFirework.Value && __instance.transform.position.y > SAFE_HEIGHT)
+                {
+                    __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                    Plugin.Logger.LogInfo("Player killed from flying too high too fast");
+                }
             }
         }
 
