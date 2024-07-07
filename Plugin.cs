@@ -14,7 +14,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.2.0";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.3.0";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<bool> configBecomeFirework;
@@ -40,7 +40,7 @@ namespace JetpackFixes
     {
         // sort of arbitrary
         // ~110 Y is roughly how high you can get by the time you reach instant death speed, if you go straight up from the ship's floor in one trip
-        static float SAFE_HEIGHT = 110.55537f;
+        const float SAFE_HEIGHT = 110.55537f;
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
@@ -48,9 +48,12 @@ namespace JetpackFixes
         {
             List<CodeInstruction> codes = instructions.ToList();
 
-            LayerMask allPlayersCollideWithMask = -4493385; // StartOfRound.allPlayersCollideWithMask
-            // all the player's MapHazards and DecalStickableSurface colliders are marked as triggers so they should be ok in v50
+            LayerMask allPlayersCollideWithMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
+            // all the player's MapHazards and DecalStickableSurface colliders are marked as triggers so they should be ok
             allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
+            // Terrain was removed in v56, add it back so can crash into trees
+            allPlayersCollideWithMask |= (1 << LayerMask.NameToLayer("Terrain"));
+
             // boundaries for i-1 and i+3
             for (int i = 1; i < codes.Count - 3; i++)
             {
@@ -95,7 +98,7 @@ namespace JetpackFixes
         [HarmonyPrefix]
         static void PreJetpackUpdate(JetpackItem __instance, ref Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
         {
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && ___jetpackPower > 10f && __instance.playerHeldBy.jetpackControls && ___forces.magnitude > 50f)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance?.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && ___jetpackPower > 10f && __instance.playerHeldBy.jetpackControls && ___forces.magnitude > 50f)
             {
                 // NEW: kills the player if they try to slide across the ground while moving too fast
                 // (this is still a collision taking place while moving at instant-death speeds)
