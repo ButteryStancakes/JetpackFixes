@@ -11,23 +11,52 @@ using UnityEngine;
 
 namespace JetpackFixes
 {
+    enum MidAirExplosions
+    {
+        Off = -1,
+        OnlyTooHigh,
+        Always
+    }
+
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.3.0";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.1";
         internal static new ManualLogSource Logger;
 
-        internal static ConfigEntry<bool> configBecomeFirework;
+        internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
+        internal static ConfigEntry<bool> configTransferMomentum;
 
         void Awake()
         {
             Logger = base.Logger;
 
-            configBecomeFirework = Config.Bind(
+            configMidAirExplosions = Config.Bind(
                 "Misc",
-                "BecomeFirework",
+                "MidAirExplosions",
+                MidAirExplosions.OnlyTooHigh,
+                "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
+                "\"Off\" will only explode when you crash into something solid. (Default)\n" + 
+                "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also extremely high above the terrain.\n" +
+                "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
+
+            configTransferMomentum = Config.Bind(
+                "Misc",
+                "TransferMomentum",
                 false,
-                "Enabling this setting will allow you to explode again in mid-air by flying straight upwards at high speeds.");
+                "When dropping the jetpack, instead of immediately coming to a stop, you will maintain the same direction and speed.");
+
+            // migrate legacy config
+            if (configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh)
+            {
+                bool becomeFirework = Config.Bind("Misc", "BecomeFirework", true, "Legacy setting, use \"MidAirExplosions\" instead").Value;
+
+                if (!becomeFirework)
+                    configMidAirExplosions.Value = MidAirExplosions.Off;
+
+                Config.Remove(Config["Misc", "BecomeFirework"].Definition);
+                Config.Save();
+            }
 
             new Harmony(PLUGIN_GUID).PatchAll();
 
@@ -42,6 +71,15 @@ namespace JetpackFixes
         // ~110 Y is roughly how high you can get by the time you reach instant death speed, if you go straight up from the ship's floor in one trip
         const float SAFE_HEIGHT = 110.55537f;
 
+        const float MIN_DEATH_SPEED = 50f;
+        // Since vanilla requires speed to exceed the RaycastHit's distance (which has a maximum of 4) plus 50
+        const float MAX_DEATH_SPEED = 54f;
+
+        static EnemyType flowerSnakeEnemy;
+        static Collider localPlayerCube;
+
+        static readonly FieldInfo JETPACK_ACTIVATED = AccessTools.Field(typeof(JetpackItem), "jetpackActivated");
+
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
         static IEnumerable<CodeInstruction> TransJetpackUpdate(IEnumerable<CodeInstruction> instructions)
@@ -49,12 +87,12 @@ namespace JetpackFixes
             List<CodeInstruction> codes = instructions.ToList();
 
             LayerMask allPlayersCollideWithMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
-            // all the player's MapHazards and DecalStickableSurface colliders are marked as triggers so they should be ok
-            allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
-            // Terrain was removed in v56, add it back so can crash into trees
+            // All the player's MapHazards and DecalStickableSurface colliders are marked as triggers, so they should be ok
+            // NEW: Instead of removing this layer, keep it so we can crash into other players
+            //allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
+            // Terrain was removed in v56, add it back so we can crash into trees
             allPlayersCollideWithMask |= (1 << LayerMask.NameToLayer("Terrain"));
 
-            // boundaries for i-1 and i+3
             for (int i = 1; i < codes.Count - 3; i++)
             {
                 // The player gets locked in place if jetpackPower > 10 and they touch the ground.
@@ -87,7 +125,7 @@ namespace JetpackFixes
                     codes[i].opcode = OpCodes.Ldc_I4;
                     codes[i].operand = (int)allPlayersCollideWithMask;
                     codes.RemoveAt(i - 1);
-                    Plugin.Logger.LogDebug("Transpiler: Player will no longer collide with themselves");
+                    Plugin.Logger.LogDebug("Transpiler: Replace layer mask with custom");
                 }
             }
 
@@ -95,23 +133,42 @@ namespace JetpackFixes
         }
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
-        [HarmonyPrefix]
-        static void PreJetpackUpdate(JetpackItem __instance, ref Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
+        [HarmonyPostfix]
+        static void PostJetpackUpdate(JetpackItem __instance, Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower, PlayerControllerB ___previousPlayerHeldBy)
         {
-            if (__instance.playerHeldBy == GameNetworkManager.Instance?.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && ___jetpackPower > 10f && __instance.playerHeldBy.jetpackControls && ___forces.magnitude > 50f)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance?.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && __instance.playerHeldBy.jetpackControls)
             {
-                // NEW: kills the player if they try to slide across the ground while moving too fast
-                // (this is still a collision taking place while moving at instant-death speeds)
-                if (__instance.playerHeldBy.thisController.isGrounded)
+                if (___jetpackPower > 10f)
                 {
-                    __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
-                    Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
+                    float velocity = ___forces.magnitude;
+                    if (velocity > MIN_DEATH_SPEED)
+                    {
+                        // Kills the player at excessive speed. Basically replicates vanilla's behavior (with less physics jank)
+                        // NEW: Config setting to only apply this at extreme heights
+                        if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
+                        {
+                            __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                            if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
+                                Plugin.Logger.LogInfo("Player killed from flying too fast");
+                            else
+                                Plugin.Logger.LogInfo($"Player killed from flying too high too fast (Altitude: {__instance.transform.position.y} > {SAFE_HEIGHT})");
+                        }
+                        // Kills the player if they try to slide across the ground while moving too fast
+                        // (This is still a collision taking place while moving at instant-death speeds)
+                        else if (__instance.playerHeldBy.thisController.isGrounded)
+                        {
+                            __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                            Plugin.Logger.LogInfo("Player killed from touching ground while flying too fast");
+                        }
+                    }
                 }
-                // NEW: kills the player if exceeding safe speed at certain altitude (config setting)
-                else if (Plugin.configBecomeFirework.Value && __instance.transform.position.y > SAFE_HEIGHT)
+
+                // Regain full directional control when activating jetpack after tulip snake takeoff
+                if (___previousPlayerHeldBy.maxJetpackAngle >= 0f && ___previousPlayerHeldBy.maxJetpackAngle < 360f)
                 {
-                    __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
-                    Plugin.Logger.LogInfo("Player killed from flying too high too fast");
+                    ___previousPlayerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
+                    ___previousPlayerHeldBy.jetpackRandomIntensity = 60f; //0f;
+                    Plugin.Logger.LogInfo("Uncap player rotation (using jetpack while tulip snakes riding)");
                 }
             }
         }
@@ -120,6 +177,7 @@ namespace JetpackFixes
         [HarmonyPostfix]
         static void PostJetpackUpdate(JetpackItem __instance, bool ___jetpackActivated)
         {
+            // Fixes inverted jetpack battery
             __instance.isBeingUsed = ___jetpackActivated;
         }
 
@@ -127,8 +185,8 @@ namespace JetpackFixes
         [HarmonyPrefix]
         static void PrePlayerDamaged(PlayerControllerB __instance, ref int damageNumber, CauseOfDeath causeOfDeath)
         {
-            // player crashed into something while travelling at a speed past the intended instant-death threshold
-            if (causeOfDeath == CauseOfDeath.Gravity && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= 50f)
+            // Player crashed into something while travelling at a speed past the intended instant-death threshold
+            if (causeOfDeath == CauseOfDeath.Gravity && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED)
             {
                 Plugin.Logger.LogInfo($"Player took {damageNumber} \"Gravity\" damage while flying too fast; override with 100 (instant death)");
                 damageNumber = 100;
@@ -145,6 +203,18 @@ namespace JetpackFixes
                 __instance.jetpackAudio.dopplerLevel = 0f;
                 __instance.jetpackBeepsAudio.dopplerLevel = 0f;
                 Plugin.Logger.LogInfo("Jetpack held by you, disable doppler effect");
+
+                if (localPlayerCube == null)
+                {
+                    localPlayerCube = __instance.playerHeldBy.transform.Find("Misc/Cube")?.GetComponent<Collider>();
+                    if (localPlayerCube?.gameObject.layer == 26)
+                        Plugin.Logger.LogInfo("Cached player's \"PlaceableShipObjects\" collider");
+                    else
+                    {
+                        localPlayerCube = null;
+                        Plugin.Logger.LogWarning("Error fetching player's \"PlaceableShipObjects\" collider");
+                    }
+                }
             }
             else
             {
@@ -152,6 +222,111 @@ namespace JetpackFixes
                 __instance.jetpackBeepsAudio.dopplerLevel = 1f;
                 Plugin.Logger.LogInfo("Jetpack held by other player, enable doppler effect");
             }
+        }
+
+        [HarmonyPatch(typeof(JetpackItem), "DeactivateJetpack")]
+        [HarmonyPostfix]
+        static void PostDeactivateJetpack(PlayerControllerB ___previousPlayerHeldBy)
+        {
+            if (___previousPlayerHeldBy != GameNetworkManager.Instance.localPlayerController || !___previousPlayerHeldBy.disablingJetpackControls)
+                return;
+
+            // Try to optimize by not performing this check unless there are tulip snakes on the map
+            if (flowerSnakeEnemy != null && flowerSnakeEnemy.numberSpawned > 0)
+            {
+                int snakesLeft = flowerSnakeEnemy.numberSpawned;
+                foreach (EnemyAI enemyAI in RoundManager.Instance.SpawnedEnemies)
+                {
+                    FlowerSnakeEnemy tulipSnake = enemyAI as FlowerSnakeEnemy;
+                    if (tulipSnake != null)
+                    {
+                        snakesLeft--;
+                        // Verify if there is a living tulip snake clung to the player and flapping its wings
+                        if (!tulipSnake.isEnemyDead && tulipSnake.clingingToPlayer == ___previousPlayerHeldBy && tulipSnake.flightPower > 0f)
+                        {
+                            tulipSnake.clingingToPlayer.disablingJetpackControls = false;
+                            // Can't set maxJetpackAngle after player has been flying with free rotation, or their angle could lock up
+                            // However, jetpackRandomIntensity is capped by maxJetpackAngle, so it needs to be set to an arbitrarily high value
+                            tulipSnake.clingingToPlayer.maxJetpackAngle = float.MaxValue; //60f;
+                            tulipSnake.clingingToPlayer.jetpackRandomIntensity = 60f; //120f;
+                            Plugin.Logger.LogInfo("Jetpack disabled, but tulip snake is still carrying");
+                            return;
+                        }
+
+                        if (snakesLeft <= 0)
+                            return;
+                    }
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(FlowerSnakeEnemy), "SetFlappingLocalClient")]
+        [HarmonyPostfix]
+        static void PostSetFlappingLocalClient(FlowerSnakeEnemy __instance, bool isMainSnake)
+        {
+            if (!isMainSnake || __instance.clingingToPlayer != GameNetworkManager.Instance.localPlayerController || !__instance.clingingToPlayer.disablingJetpackControls)
+                return;
+
+            for (int i = 0; i < __instance.clingingToPlayer.ItemSlots.Length; i++)
+            {
+                // If the item is equipped...
+                if (__instance.clingingToPlayer.ItemSlots[i] == null || __instance.clingingToPlayer.ItemSlots[i].isPocketed)
+                    continue;
+
+                JetpackItem jetpack = __instance.clingingToPlayer.ItemSlots[i] as JetpackItem;
+                // ... and is a jetpack that's activated...
+                if (jetpack != null && (bool)JETPACK_ACTIVATED.GetValue(jetpack))
+                {
+                    __instance.clingingToPlayer.disablingJetpackControls = false;
+                    __instance.clingingToPlayer.maxJetpackAngle = -1f;
+                    __instance.clingingToPlayer.jetpackRandomIntensity = 0f;
+                    Plugin.Logger.LogInfo("Player still using jetpack when tulip snake dropped; re-enable flight controls");
+                    return;
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(FlowerSnakeEnemy), nameof(FlowerSnakeEnemy.Start))]
+        [HarmonyPostfix]
+        static void PostTulipSnakeStart(FlowerSnakeEnemy __instance)
+        {
+            if (flowerSnakeEnemy == null)
+                flowerSnakeEnemy = __instance.enemyType;
+        }
+
+        [HarmonyPatch(typeof(GameNetworkManager), nameof(GameNetworkManager.Disconnect))]
+        [HarmonyPostfix]
+        static void GameNetworkManagerPostDisconnect()
+        {
+            flowerSnakeEnemy = null;
+        }
+
+        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.DiscardItem))]
+        [HarmonyPostfix]
+        static void PostDropJetpack(JetpackItem __instance, PlayerControllerB ___previousPlayerHeldBy, ref Vector3 ___forces)
+        {
+            if (Plugin.configTransferMomentum.Value && !___previousPlayerHeldBy.isPlayerDead && ___previousPlayerHeldBy.jetpackControls && ___forces.magnitude > 0f)
+            {
+                ___previousPlayerHeldBy.externalForceAutoFade += new Vector3(___forces.x, ___forces.y * __instance.verticalMultiplier, ___forces.z);
+                Plugin.Logger.LogInfo("Player dropped jetpack while flying, fling them!");
+            }
+            ___forces = Vector3.zero;
+        }
+
+        [HarmonyPatch(typeof(JetpackItem), "ActivateJetpack")]
+        [HarmonyPostfix]
+        static void PostActivateJetpack(JetpackItem __instance, Vector3 ___forces)
+        {
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && localPlayerCube.enabled && __instance.playerHeldBy.jetpackControls)
+                localPlayerCube.enabled = false;
+        }
+
+        [HarmonyPatch(typeof(PlayerControllerB), nameof(PlayerControllerB.DisableJetpackControlsLocally))]
+        [HarmonyPostfix]
+        static void FlightControlsDisabled(PlayerControllerB __instance)
+        {
+            if (__instance == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && !localPlayerCube.enabled)
+                localPlayerCube.enabled = true;
         }
     }
 }
