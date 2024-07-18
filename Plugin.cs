@@ -21,7 +21,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.1";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.2";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -134,9 +134,12 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyPostfix]
-        static void PostJetpackUpdate(JetpackItem __instance, Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower, PlayerControllerB ___previousPlayerHeldBy)
+        static void PostJetpackUpdate(JetpackItem __instance, Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
         {
-            if (__instance.playerHeldBy == GameNetworkManager.Instance?.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && __instance.playerHeldBy.jetpackControls)
+            if (GameNetworkManager.Instance?.localPlayerController == null)
+                return;
+
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && __instance.playerHeldBy.jetpackControls)
             {
                 if (___jetpackPower > 10f)
                 {
@@ -164,19 +167,14 @@ namespace JetpackFixes
                 }
 
                 // Regain full directional control when activating jetpack after tulip snake takeoff
-                if (___previousPlayerHeldBy.maxJetpackAngle >= 0f && ___previousPlayerHeldBy.maxJetpackAngle < 360f)
+                if (__instance.playerHeldBy.maxJetpackAngle >= 0f && __instance.playerHeldBy.maxJetpackAngle < 360f)
                 {
-                    ___previousPlayerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
-                    ___previousPlayerHeldBy.jetpackRandomIntensity = 60f; //0f;
+                    __instance.playerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
+                    __instance.playerHeldBy.jetpackRandomIntensity = 60f; //0f;
                     Plugin.Logger.LogInfo("Uncap player rotation (using jetpack while tulip snakes riding)");
                 }
             }
-        }
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
-        [HarmonyPostfix]
-        static void PostJetpackUpdate(JetpackItem __instance, bool ___jetpackActivated)
-        {
             // Fixes inverted jetpack battery
             __instance.isBeingUsed = ___jetpackActivated;
         }
