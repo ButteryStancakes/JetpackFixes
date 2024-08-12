@@ -167,7 +167,7 @@ namespace JetpackFixes
                 }
 
                 // Regain full directional control when activating jetpack after tulip snake takeoff
-                if (__instance.playerHeldBy.maxJetpackAngle >= 0f && __instance.playerHeldBy.maxJetpackAngle < 360f)
+                if (__instance.playerHeldBy != null && __instance.playerHeldBy.maxJetpackAngle >= 0f && __instance.playerHeldBy.maxJetpackAngle < 360f)
                 {
                     __instance.playerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
                     __instance.playerHeldBy.jetpackRandomIntensity = 60f; //0f;
