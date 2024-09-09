@@ -21,7 +21,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.2";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.4";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -36,7 +36,7 @@ namespace JetpackFixes
                 "MidAirExplosions",
                 MidAirExplosions.OnlyTooHigh,
                 "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
-                "\"Off\" will only explode when you crash into something solid. (Default)\n" + 
+                "\"Off\" will only explode when you crash into something solid.\n" + 
                 "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also extremely high above the terrain.\n" +
                 "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
 
@@ -76,7 +76,7 @@ namespace JetpackFixes
         const float MAX_DEATH_SPEED = 54f;
 
         static EnemyType flowerSnakeEnemy;
-        static Collider localPlayerCube;
+        //static Collider localPlayerCube;
 
         static readonly FieldInfo JETPACK_ACTIVATED = AccessTools.Field(typeof(JetpackItem), "jetpackActivated");
 
@@ -88,8 +88,7 @@ namespace JetpackFixes
 
             LayerMask allPlayersCollideWithMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
             // All the player's MapHazards and DecalStickableSurface colliders are marked as triggers, so they should be ok
-            // NEW: Instead of removing this layer, keep it so we can crash into other players
-            //allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
+            allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
             // Terrain was removed in v56, add it back so we can crash into trees
             allPlayersCollideWithMask |= (1 << LayerMask.NameToLayer("Terrain"));
 
@@ -202,7 +201,7 @@ namespace JetpackFixes
                 __instance.jetpackBeepsAudio.dopplerLevel = 0f;
                 Plugin.Logger.LogInfo("Jetpack held by you, disable doppler effect");
 
-                if (localPlayerCube == null)
+                /*if (localPlayerCube == null)
                 {
                     localPlayerCube = __instance.playerHeldBy.transform.Find("Misc/Cube")?.GetComponent<Collider>();
                     if (localPlayerCube?.gameObject.layer == 26)
@@ -212,7 +211,7 @@ namespace JetpackFixes
                         localPlayerCube = null;
                         Plugin.Logger.LogWarning("Error fetching player's \"PlaceableShipObjects\" collider");
                     }
-                }
+                }*/
             }
             else
             {
@@ -311,7 +310,7 @@ namespace JetpackFixes
             ___forces = Vector3.zero;
         }
 
-        [HarmonyPatch(typeof(JetpackItem), "ActivateJetpack")]
+        /*[HarmonyPatch(typeof(JetpackItem), "ActivateJetpack")]
         [HarmonyPostfix]
         static void PostActivateJetpack(JetpackItem __instance, Vector3 ___forces)
         {
@@ -325,6 +324,6 @@ namespace JetpackFixes
         {
             if (__instance == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && !localPlayerCube.enabled)
                 localPlayerCube.enabled = true;
-        }
+        }*/
     }
 }
