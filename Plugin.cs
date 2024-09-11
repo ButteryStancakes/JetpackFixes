@@ -21,7 +21,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.4";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.5";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -37,7 +37,7 @@ namespace JetpackFixes
                 MidAirExplosions.OnlyTooHigh,
                 "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
                 "\"Off\" will only explode when you crash into something solid.\n" + 
-                "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also extremely high above the terrain.\n" +
+                "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain.\n" +
                 "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
 
             configTransferMomentum = Config.Bind(
@@ -91,6 +91,8 @@ namespace JetpackFixes
             allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
             // Terrain was removed in v56, add it back so we can crash into trees
             allPlayersCollideWithMask |= (1 << LayerMask.NameToLayer("Terrain"));
+            // As of v64, belt bags now attach an "InteractableObject" layer object to the player, which can also be crashed into
+            allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("InteractableObject"));
 
             for (int i = 1; i < codes.Count - 3; i++)
             {
