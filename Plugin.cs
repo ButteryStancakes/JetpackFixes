@@ -21,7 +21,7 @@ namespace JetpackFixes
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.4.5";
+        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.0";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -187,8 +187,8 @@ namespace JetpackFixes
             // Player crashed into something while travelling at a speed past the intended instant-death threshold
             if (causeOfDeath == CauseOfDeath.Gravity && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED)
             {
-                Plugin.Logger.LogInfo($"Player took {damageNumber} \"Gravity\" damage while flying too fast; override with 100 (instant death)");
-                damageNumber = 100;
+                Plugin.Logger.LogInfo($"Player took {damageNumber} \"Gravity\" damage while flying too fast; should be instant death");
+                damageNumber = Mathf.Max(100, __instance.health);
             }
         }
 
@@ -221,6 +221,9 @@ namespace JetpackFixes
                 __instance.jetpackBeepsAudio.dopplerLevel = 1f;
                 Plugin.Logger.LogInfo("Jetpack held by other player, enable doppler effect");
             }
+
+            // hopefully fix the jetpack not responding to inputs
+            __instance.useCooldown = 0f;
         }
 
         [HarmonyPatch(typeof(JetpackItem), "DeactivateJetpack")]
@@ -327,5 +330,56 @@ namespace JetpackFixes
             if (__instance == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && !localPlayerCube.enabled)
                 localPlayerCube.enabled = true;
         }*/
+
+        [HarmonyPatch(typeof(JetpackItem), "SetJetpackAudios")]
+        [HarmonyPrefix]
+        static bool NewJetpackAudio(JetpackItem __instance, ref bool ___jetpackActivated, ref float ___noiseInterval)
+        {
+            if (___jetpackActivated)
+            {
+                if (___noiseInterval >= 0.5f)
+                {
+                    ___noiseInterval = 0f;
+                    RoundManager.Instance.PlayAudibleNoise(__instance.transform.position, 25f, 0.85f, 0, __instance.playerHeldBy.isInHangarShipRoom && StartOfRound.Instance.hangarDoorsClosed, 41);
+                }
+                else
+                    ___noiseInterval += Time.deltaTime;
+
+                if (__instance.insertedBattery.charge < 0.15f)
+                {
+                    if (__instance.jetpackBeepsAudio.clip != __instance.jetpackLowBatteriesSFX)
+                    {
+                        __instance.jetpackBeepsAudio.Stop();
+                        __instance.jetpackBeepsAudio.clip = __instance.jetpackLowBatteriesSFX;
+                        //__instance.jetpackBeepsAudio.loop = true;
+                    }
+
+                    if (!__instance.jetpackBeepsAudio.isPlaying)
+                        __instance.jetpackBeepsAudio.Play();
+                }
+                else
+                {
+                    if (__instance.jetpackBeepsAudio.clip != __instance.jetpackWarningBeepSFX)
+                    {
+                        __instance.jetpackBeepsAudio.Stop();
+                        __instance.jetpackBeepsAudio.clip = __instance.jetpackWarningBeepSFX;
+                        //__instance.jetpackBeepsAudio.loop = false;
+                    }
+
+                    // maybe 7m? idk
+                    if (Physics.CheckSphere(__instance.transform.position, 6f, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
+                    {
+                        if (!__instance.jetpackBeepsAudio.isPlaying)
+                            __instance.jetpackBeepsAudio.Play();
+                    }
+                    else
+                        __instance.jetpackBeepsAudio.Stop();
+                }
+            }
+            else
+                __instance.jetpackBeepsAudio.Stop();
+
+            return false;
+        }
     }
 }
