@@ -1,4 +1,5 @@
 ﻿using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using GameNetcodeStuff;
@@ -19,17 +20,34 @@ namespace JetpackFixes
     }
 
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
+    [BepInDependency(GUID_JETPACK_WARNING, BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.1";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.3";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
         internal static ConfigEntry<bool> configTransferMomentum;
 
+        const string GUID_JETPACK_WARNING = "JetpackWarning", GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
+        internal static bool DISABLE_BEEP_PATCH;
+
         void Awake()
         {
             Logger = base.Logger;
+
+            if (Chainloader.PluginInfos.ContainsKey(GUID_LOBBY_COMPATIBILITY))
+            {
+                Logger.LogInfo("CROSS-COMPATIBILITY - Lobby Compatibility detected");
+                LobbyCompatibility.Init();
+            }
+
+            if (Chainloader.PluginInfos.ContainsKey(GUID_JETPACK_WARNING))
+            {
+                DISABLE_BEEP_PATCH = true;
+                Logger.LogInfo("CROSS-COMPATIBILITY - Jetpack Warning detected");
+            }
 
             configMidAirExplosions = Config.Bind(
                 "Misc",
@@ -349,6 +367,9 @@ namespace JetpackFixes
         [HarmonyPrefix]
         static bool NewJetpackAudio(JetpackItem __instance, ref bool ___jetpackActivated, ref float ___noiseInterval)
         {
+            if (Plugin.DISABLE_BEEP_PATCH)
+                return true;
+
             if (___jetpackActivated)
             {
                 if (___noiseInterval >= 0.5f)
