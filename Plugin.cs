@@ -24,7 +24,7 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.3";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.4";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -91,26 +91,27 @@ namespace JetpackFixes
 
         const float MIN_DEATH_SPEED = 50f;
         // Since vanilla requires speed to exceed the RaycastHit's distance (which has a maximum of 4) plus 50
-        const float MAX_DEATH_SPEED = 54f;
+        const float MAX_DEATH_SPEED = MIN_DEATH_SPEED + 4f;
 
         static EnemyType flowerSnakeEnemy;
-        //static Collider localPlayerCube;
-
-        //static readonly FieldInfo JETPACK_ACTIVATED = AccessTools.Field(typeof(JetpackItem), "jetpackActivated");
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
-        static IEnumerable<CodeInstruction> TransJetpackUpdate(IEnumerable<CodeInstruction> instructions)
+        static IEnumerable<CodeInstruction> JetpackItem_Trans_Update(IEnumerable<CodeInstruction> instructions)
         {
             List<CodeInstruction> codes = instructions.ToList();
 
-            LayerMask allPlayersCollideWithMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
+            LayerMask jetpackMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
             // All the player's MapHazards and DecalStickableSurface colliders are marked as triggers, so they should be ok
-            allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
+            jetpackMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
             // Terrain was removed in v56, add it back so we can crash into trees
-            allPlayersCollideWithMask |= (1 << LayerMask.NameToLayer("Terrain"));
+            jetpackMask |= (1 << LayerMask.NameToLayer("Terrain"));
             // As of v64, belt bags now attach an "InteractableObject" layer object to the player, which can also be crashed into
-            allPlayersCollideWithMask &= ~(1 << LayerMask.NameToLayer("InteractableObject"));
+            jetpackMask &= ~(1 << LayerMask.NameToLayer("InteractableObject"));
+
+            FieldInfo jetpackPower = AccessTools.Field(typeof(JetpackItem), nameof(JetpackItem.jetpackPower)),
+                      rayHit = AccessTools.Field(typeof(JetpackItem), nameof(JetpackItem.rayHit)),
+                      allPlayersCollideWithMask = AccessTools.Field(typeof(StartOfRound), nameof(StartOfRound.allPlayersCollideWithMask));
 
             for (int i = 1; i < codes.Count - 3; i++)
             {
@@ -118,13 +119,13 @@ namespace JetpackFixes
                 // I think the intention was that the player stays grounded until jetpackPower is greater than 10,
                 // since this code was added in the same beta patch that nerfed jetpack's takeoff efficiency,
                 // but that would require the comparison to be reversed (jetpackPower <= 10)
-                if (codes[i].opcode == OpCodes.Ldc_R4 && (float)codes[i].operand == 10f && codes[i - 1].opcode == OpCodes.Ldfld && (FieldInfo)codes[i - 1].operand == typeof(JetpackItem).GetField("jetpackPower", BindingFlags.Instance | BindingFlags.NonPublic))
+                if (codes[i].opcode == OpCodes.Ldc_R4 && (float)codes[i].operand == 10f && codes[i - 1].opcode == OpCodes.Ldfld && (FieldInfo)codes[i - 1].operand == jetpackPower)
                 {
                     codes[i + 1].opcode = OpCodes.Bgt_Un;
                     Plugin.Logger.LogDebug("Transpiler: Reverse jetpackPower comparison on isGrounded check (allows for sliding)");
                 }
                 // Reduce range of raycast (and remove redundancy with distance check)
-                else if (codes[i].opcode == OpCodes.Ldflda && (FieldInfo)codes[i].operand == typeof(JetpackItem).GetField("rayHit", BindingFlags.Instance | BindingFlags.NonPublic))
+                else if (codes[i].opcode == OpCodes.Ldflda && (FieldInfo)codes[i].operand == rayHit)
                 {
                     if (codes[i + 1].opcode == OpCodes.Ldc_R4 && (float)codes[i + 1].operand == 25f)
                     {
@@ -139,10 +140,10 @@ namespace JetpackFixes
                     }
                 }
                 // Replace raycast layer with the new layer mask (prevents player from colliding with self)
-                else if (codes[i].opcode == OpCodes.Ldfld && (FieldInfo)codes[i].operand == typeof(StartOfRound).GetField(nameof(StartOfRound.allPlayersCollideWithMask), BindingFlags.Instance | BindingFlags.Public))
+                else if (codes[i].opcode == OpCodes.Ldfld && (FieldInfo)codes[i].operand == allPlayersCollideWithMask)
                 {
                     codes[i].opcode = OpCodes.Ldc_I4;
-                    codes[i].operand = (int)allPlayersCollideWithMask;
+                    codes[i].operand = (int)jetpackMask;
                     codes.RemoveAt(i - 1);
                     Plugin.Logger.LogDebug("Transpiler: Replace layer mask with custom");
                 }
@@ -153,23 +154,23 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
         [HarmonyPostfix]
-        static void PostJetpackUpdate(JetpackItem __instance, Vector3 ___forces, bool ___jetpackActivated, float ___jetpackPower)
+        static void JetpackItem_Post_Update(JetpackItem __instance)
         {
             if (GameNetworkManager.Instance?.localPlayerController == null)
                 return;
 
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && ___jetpackActivated && __instance.playerHeldBy.jetpackControls)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && __instance.jetpackActivated && __instance.playerHeldBy.jetpackControls)
             {
-                if (___jetpackPower > 10f)
+                if (__instance.jetpackPower > 10f)
                 {
-                    float velocity = ___forces.magnitude;
+                    float velocity = __instance.forces.magnitude;
                     if (velocity > MIN_DEATH_SPEED)
                     {
                         // Kills the player at excessive speed. Basically replicates vanilla's behavior (with less physics jank)
                         // NEW: Config setting to only apply this at extreme heights
                         if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
                         {
-                            __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                            __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
                             if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
                                 Plugin.Logger.LogDebug("Player killed from flying too fast");
                             else
@@ -179,7 +180,7 @@ namespace JetpackFixes
                         // (This is still a collision taking place while moving at instant-death speeds)
                         else if (__instance.playerHeldBy.thisController.isGrounded)
                         {
-                            __instance.playerHeldBy.KillPlayer(___forces, true, CauseOfDeath.Gravity);
+                            __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
                             Plugin.Logger.LogDebug("Player killed from touching ground while flying too fast");
                         }
                     }
@@ -209,12 +210,33 @@ namespace JetpackFixes
             }
 
             // Fixes inverted jetpack battery
-            __instance.isBeingUsed = ___jetpackActivated;
+            __instance.isBeingUsed = __instance.jetpackActivated;
+
+            // Fixes doppler effect
+            if (__instance.playerHeldBy != null)
+            {
+                if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController || (GameNetworkManager.Instance.localPlayerController.isPlayerDead && GameNetworkManager.Instance.localPlayerController.spectatedPlayerScript != null && __instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController.spectatedPlayerScript))
+                {
+                    // Doppler effect is only meant to apply to audio waves travelling towards or away from the listener (not a jetpack strapped to your back)
+                    if (__instance.jetpackAudio.dopplerLevel != 0f || __instance.jetpackBeepsAudio.dopplerLevel != 0f)
+                    {
+                        __instance.jetpackAudio.dopplerLevel = 0f;
+                        __instance.jetpackBeepsAudio.dopplerLevel = 0f;
+                        Plugin.Logger.LogDebug($"Jetpack held by {(__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController ? "you" : "spectate target")}, disable doppler effect");
+                    }
+                }
+                else if (__instance.jetpackAudio.dopplerLevel != 1f || __instance.jetpackBeepsAudio.dopplerLevel != 1f)
+                {
+                    __instance.jetpackAudio.dopplerLevel = 1f;
+                    __instance.jetpackBeepsAudio.dopplerLevel = 1f;
+                    Plugin.Logger.LogDebug("Jetpack held by other player, enable doppler effect");
+                }
+            }
         }
 
         [HarmonyPatch(typeof(PlayerControllerB), nameof(PlayerControllerB.DamagePlayer))]
         [HarmonyPrefix]
-        static void PrePlayerDamaged(PlayerControllerB __instance, ref int damageNumber, CauseOfDeath causeOfDeath)
+        static void PlayerControllerB_Pre_DamagePlayer(PlayerControllerB __instance, ref int damageNumber, CauseOfDeath causeOfDeath)
         {
             // Player crashed into something while travelling at a speed past the intended instant-death threshold
             if (causeOfDeath == CauseOfDeath.Gravity && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED)
@@ -226,43 +248,17 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.EquipItem))]
         [HarmonyPostfix]
-        static void PostEquipJetpack(JetpackItem __instance)
+        static void JetpackItem_Post_EquipItem(JetpackItem __instance)
         {
-            // Doppler effect is only meant to apply to audio waves travelling towards or away from the listener (not a jetpack strapped to your back)
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController)
-            {
-                __instance.jetpackAudio.dopplerLevel = 0f;
-                __instance.jetpackBeepsAudio.dopplerLevel = 0f;
-                Plugin.Logger.LogDebug("Jetpack held by you, disable doppler effect");
-
-                /*if (localPlayerCube == null)
-                {
-                    localPlayerCube = __instance.playerHeldBy.transform.Find("Misc/Cube")?.GetComponent<Collider>();
-                    if (localPlayerCube?.gameObject.layer == 26)
-                        Plugin.Logger.LogInfo("Cached player's \"PlaceableShipObjects\" collider");
-                    else
-                    {
-                        localPlayerCube = null;
-                        Plugin.Logger.LogWarning("Error fetching player's \"PlaceableShipObjects\" collider");
-                    }
-                }*/
-            }
-            else
-            {
-                __instance.jetpackAudio.dopplerLevel = 1f;
-                __instance.jetpackBeepsAudio.dopplerLevel = 1f;
-                Plugin.Logger.LogDebug("Jetpack held by other player, enable doppler effect");
-            }
-
             // hopefully fix the jetpack not responding to inputs
             __instance.useCooldown = 0f;
         }
 
-        [HarmonyPatch(typeof(JetpackItem), "DeactivateJetpack")]
+        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.DeactivateJetpack))]
         [HarmonyPostfix]
-        static void PostDeactivateJetpack(PlayerControllerB ___previousPlayerHeldBy)
+        static void JetpackItem_Post_DeactivateJetpack(JetpackItem __instance)
         {
-            if (___previousPlayerHeldBy != GameNetworkManager.Instance.localPlayerController || !___previousPlayerHeldBy.disablingJetpackControls)
+            if (__instance.previousPlayerHeldBy != GameNetworkManager.Instance.localPlayerController || !__instance.previousPlayerHeldBy.disablingJetpackControls)
                 return;
 
             // Try to optimize by not performing this check unless there are tulip snakes on the map
@@ -276,7 +272,7 @@ namespace JetpackFixes
                     {
                         snakesLeft--;
                         // Verify if there is a living tulip snake clung to the player and flapping its wings
-                        if (!tulipSnake.isEnemyDead && tulipSnake.clingingToPlayer == ___previousPlayerHeldBy && tulipSnake.flightPower > 0f)
+                        if (!tulipSnake.isEnemyDead && tulipSnake.clingingToPlayer == __instance.previousPlayerHeldBy && tulipSnake.flightPower > 0f)
                         {
                             tulipSnake.clingingToPlayer.disablingJetpackControls = false;
                             // Can't set maxJetpackAngle after player has been flying with free rotation, or their angle could lock up
@@ -294,9 +290,9 @@ namespace JetpackFixes
             }
         }
 
-        [HarmonyPatch(typeof(FlowerSnakeEnemy), "SetFlappingLocalClient")]
+        [HarmonyPatch(typeof(FlowerSnakeEnemy), nameof(FlowerSnakeEnemy.SetFlappingLocalClient))]
         [HarmonyPostfix]
-        static void PostSetFlappingLocalClient(FlowerSnakeEnemy __instance, bool isMainSnake)
+        static void FlowerSnakeEnemy_Post_SetFlappingLocalClient(FlowerSnakeEnemy __instance, bool isMainSnake)
         {
             if (!isMainSnake || __instance.clingingToPlayer != GameNetworkManager.Instance.localPlayerController || !__instance.clingingToPlayer.disablingJetpackControls)
                 return;
@@ -309,7 +305,7 @@ namespace JetpackFixes
 
                 JetpackItem jetpack = __instance.clingingToPlayer.ItemSlots[i] as JetpackItem;
                 // ... and is a jetpack that's activated...
-                if (jetpack != null && jetpack.jetpackActivated /*(bool)JETPACK_ACTIVATED.GetValue(jetpack)*/)
+                if (jetpack != null && jetpack.jetpackActivated)
                 {
                     __instance.clingingToPlayer.disablingJetpackControls = false;
                     __instance.clingingToPlayer.maxJetpackAngle = -1f;
@@ -322,7 +318,7 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(FlowerSnakeEnemy), nameof(FlowerSnakeEnemy.Start))]
         [HarmonyPostfix]
-        static void PostTulipSnakeStart(FlowerSnakeEnemy __instance)
+        static void FlowerSnakeEnemy_Post_Start(FlowerSnakeEnemy __instance)
         {
             if (flowerSnakeEnemy == null)
                 flowerSnakeEnemy = __instance.enemyType;
@@ -330,55 +326,39 @@ namespace JetpackFixes
 
         [HarmonyPatch(typeof(GameNetworkManager), nameof(GameNetworkManager.Disconnect))]
         [HarmonyPostfix]
-        static void GameNetworkManagerPostDisconnect()
+        static void GameNetworkManager_Post_Disconnect()
         {
             flowerSnakeEnemy = null;
         }
 
         [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.DiscardItem))]
         [HarmonyPostfix]
-        static void PostDropJetpack(JetpackItem __instance, PlayerControllerB ___previousPlayerHeldBy, ref Vector3 ___forces)
+        static void JetpackItem_Post_DiscardItem(JetpackItem __instance)
         {
-            if (Plugin.configTransferMomentum.Value && !___previousPlayerHeldBy.isPlayerDead && ___previousPlayerHeldBy.jetpackControls && ___forces.magnitude > 0f)
+            if (Plugin.configTransferMomentum.Value && !__instance.previousPlayerHeldBy.isPlayerDead && __instance.previousPlayerHeldBy.jetpackControls && __instance.forces.magnitude > 0f)
             {
-                ___previousPlayerHeldBy.externalForceAutoFade += new Vector3(___forces.x, ___forces.y * __instance.verticalMultiplier, ___forces.z);
+                __instance.previousPlayerHeldBy.externalForceAutoFade += new Vector3(__instance.forces.x, __instance.forces.y * __instance.verticalMultiplier, __instance.forces.z);
                 Plugin.Logger.LogDebug("Player dropped jetpack while flying, fling them!");
             }
-            ___forces = Vector3.zero;
+            __instance.forces = Vector3.zero;
         }
 
-        /*[HarmonyPatch(typeof(JetpackItem), "ActivateJetpack")]
-        [HarmonyPostfix]
-        static void PostActivateJetpack(JetpackItem __instance, Vector3 ___forces)
-        {
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && localPlayerCube.enabled && __instance.playerHeldBy.jetpackControls)
-                localPlayerCube.enabled = false;
-        }
-
-        [HarmonyPatch(typeof(PlayerControllerB), nameof(PlayerControllerB.DisableJetpackControlsLocally))]
-        [HarmonyPostfix]
-        static void FlightControlsDisabled(PlayerControllerB __instance)
-        {
-            if (__instance == GameNetworkManager.Instance.localPlayerController && localPlayerCube != null && !localPlayerCube.enabled)
-                localPlayerCube.enabled = true;
-        }*/
-
-        [HarmonyPatch(typeof(JetpackItem), "SetJetpackAudios")]
+        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.SetJetpackAudios))]
         [HarmonyPrefix]
-        static bool NewJetpackAudio(JetpackItem __instance, ref bool ___jetpackActivated, ref float ___noiseInterval)
+        static bool JetpackItem_SetJetpackAudios(JetpackItem __instance)
         {
             if (Plugin.DISABLE_BEEP_PATCH)
                 return true;
 
-            if (___jetpackActivated)
+            if (__instance.jetpackActivated)
             {
-                if (___noiseInterval >= 0.5f)
+                if (__instance.noiseInterval >= 0.5f)
                 {
-                    ___noiseInterval = 0f;
+                    __instance.noiseInterval = 0f;
                     RoundManager.Instance.PlayAudibleNoise(__instance.transform.position, 25f, 0.85f, 0, __instance.playerHeldBy.isInHangarShipRoom && StartOfRound.Instance.hangarDoorsClosed, 41);
                 }
                 else
-                    ___noiseInterval += Time.deltaTime;
+                    __instance.noiseInterval += Time.deltaTime;
 
                 if (__instance.insertedBattery.charge < 0.15f)
                 {
@@ -401,7 +381,6 @@ namespace JetpackFixes
                         //__instance.jetpackBeepsAudio.loop = false;
                     }
 
-                    // maybe 7m? idk
                     if (Physics.CheckSphere(__instance.transform.position, 6f, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
                     {
                         if (!__instance.jetpackBeepsAudio.isPlaying)
