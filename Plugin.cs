@@ -24,7 +24,7 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.5.4";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.0";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -54,7 +54,7 @@ namespace JetpackFixes
                 "MidAirExplosions",
                 MidAirExplosions.OnlyTooHigh,
                 "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
-                "\"Off\" will only explode when you crash into something solid.\n" + 
+                "\"Off\" will only explode when you crash into something solid.\n" +
                 "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain.\n" +
                 "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
 
@@ -83,7 +83,7 @@ namespace JetpackFixes
     }
 
     [HarmonyPatch]
-    class JetpackFixesPatches
+    static class JetpackFixesPatches
     {
         // sort of arbitrary
         // ~110 Y is roughly how high you can get by the time you reach instant death speed, if you go straight up from the ship's floor in one trip
@@ -101,13 +101,7 @@ namespace JetpackFixes
         {
             List<CodeInstruction> codes = instructions.ToList();
 
-            LayerMask jetpackMask = -1111789641; // StartOfRound.allPlayersCollideWithMask
-            // All the player's MapHazards and DecalStickableSurface colliders are marked as triggers, so they should be ok
-            jetpackMask &= ~(1 << LayerMask.NameToLayer("PlaceableShipObjects"));
-            // Terrain was removed in v56, add it back so we can crash into trees
-            jetpackMask |= (1 << LayerMask.NameToLayer("Terrain"));
-            // As of v64, belt bags now attach an "InteractableObject" layer object to the player, which can also be crashed into
-            jetpackMask &= ~(1 << LayerMask.NameToLayer("InteractableObject"));
+            LayerMask jetpackMask = (1 << LayerMask.NameToLayer("Room")) | (1 << LayerMask.NameToLayer("Colliders")) | (1 << LayerMask.NameToLayer("Terrain"));
 
             FieldInfo jetpackPower = AccessTools.Field(typeof(JetpackItem), nameof(JetpackItem.jetpackPower)),
                       rayHit = AccessTools.Field(typeof(JetpackItem), nameof(JetpackItem.rayHit)),
@@ -297,22 +291,41 @@ namespace JetpackFixes
             if (!isMainSnake || __instance.clingingToPlayer != GameNetworkManager.Instance.localPlayerController || !__instance.clingingToPlayer.disablingJetpackControls)
                 return;
 
-            for (int i = 0; i < __instance.clingingToPlayer.ItemSlots.Length; i++)
-            {
-                // If the item is equipped...
-                if (__instance.clingingToPlayer.ItemSlots[i] == null || __instance.clingingToPlayer.ItemSlots[i].isPocketed)
-                    continue;
+            bool jetpackActivated = false;
+            JetpackItem jetpack = null;
 
-                JetpackItem jetpack = __instance.clingingToPlayer.ItemSlots[i] as JetpackItem;
-                // ... and is a jetpack that's activated...
+            // v80+: check utility slot first
+            if (__instance.clingingToPlayer.ItemOnlySlot != null && !__instance.clingingToPlayer.ItemOnlySlot.isPocketed)
+            {
+                jetpack = __instance.clingingToPlayer.ItemOnlySlot as JetpackItem;
                 if (jetpack != null && jetpack.jetpackActivated)
+                    jetpackActivated = true;
+            }
+
+            if (!jetpackActivated)
+            {
+                for (int i = 0; i < __instance.clingingToPlayer.ItemSlots.Length; i++)
                 {
-                    __instance.clingingToPlayer.disablingJetpackControls = false;
-                    __instance.clingingToPlayer.maxJetpackAngle = -1f;
-                    __instance.clingingToPlayer.jetpackRandomIntensity = 0f;
-                    Plugin.Logger.LogInfo("Player still using jetpack when tulip snake dropped; re-enable flight controls");
-                    return;
+                    // If the item is equipped...
+                    if (__instance.clingingToPlayer.ItemSlots[i] == null || __instance.clingingToPlayer.ItemSlots[i].isPocketed)
+                        continue;
+
+                    jetpack = __instance.clingingToPlayer.ItemSlots[i] as JetpackItem;
+                    // ... and is a jetpack that's activated...
+                    if (jetpack != null && jetpack.jetpackActivated)
+                    {
+                        jetpackActivated = true;
+                        break;
+                    }
                 }
+            }
+
+            if (jetpackActivated)
+            {
+                __instance.clingingToPlayer.disablingJetpackControls = false;
+                __instance.clingingToPlayer.maxJetpackAngle = -1f;
+                __instance.clingingToPlayer.jetpackRandomIntensity = 0f;
+                Plugin.Logger.LogInfo("Player still using jetpack when tulip snake dropped; re-enable flight controls");
             }
         }
 
