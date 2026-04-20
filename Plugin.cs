@@ -24,11 +24,10 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.0";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.1";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
-        internal static ConfigEntry<bool> configTransferMomentum;
 
         const string GUID_JETPACK_WARNING = "JetpackWarning", GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
         internal static bool DISABLE_BEEP_PATCH;
@@ -58,12 +57,6 @@ namespace JetpackFixes
                 "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain.\n" +
                 "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
 
-            configTransferMomentum = Config.Bind(
-                "Misc",
-                "TransferMomentum",
-                false,
-                "When dropping the jetpack, instead of immediately coming to a stop, you will maintain the same direction and speed.");
-
             // migrate legacy config
             if (configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh)
             {
@@ -73,8 +66,10 @@ namespace JetpackFixes
                     configMidAirExplosions.Value = MidAirExplosions.Off;
 
                 Config.Remove(Config["Misc", "BecomeFirework"].Definition);
-                Config.Save();
             }
+            Config.Bind("Misc", "TransferMomentum", false, "Legacy setting, doesn't work");
+            Config.Remove(Config["Misc", "TransferMomentum"].Definition);
+            Config.Save();
 
             new Harmony(PLUGIN_GUID).PatchAll();
 
@@ -82,7 +77,7 @@ namespace JetpackFixes
         }
     }
 
-    [HarmonyPatch]
+    [HarmonyPatch(typeof(JetpackItem))]
     static class JetpackFixesPatches
     {
         // sort of arbitrary
@@ -95,7 +90,7 @@ namespace JetpackFixes
 
         static EnemyType flowerSnakeEnemy;
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
+        [HarmonyPatch(nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
         static IEnumerable<CodeInstruction> JetpackItem_Trans_Update(IEnumerable<CodeInstruction> instructions)
         {
@@ -146,59 +141,65 @@ namespace JetpackFixes
             return codes;
         }
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.Update))]
+        [HarmonyPatch(nameof(JetpackItem.Update))]
         [HarmonyPostfix]
         static void JetpackItem_Post_Update(JetpackItem __instance)
         {
             if (GameNetworkManager.Instance?.localPlayerController == null)
                 return;
 
-            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead && __instance.jetpackActivated && __instance.playerHeldBy.jetpackControls)
+            if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead)
             {
-                if (__instance.jetpackPower > 10f)
+                // hopefully fix the jetpack not responding to inputs
+                __instance.useCooldown = StartOfRound.Instance.inShipPhase ? 0.3f : 0f;
+
+                if (__instance.jetpackActivated && __instance.playerHeldBy.jetpackControls)
                 {
-                    float velocity = __instance.forces.magnitude;
-                    if (velocity > MIN_DEATH_SPEED)
+                    if (__instance.jetpackPower > 10f)
                     {
-                        // Kills the player at excessive speed. Basically replicates vanilla's behavior (with less physics jank)
-                        // NEW: Config setting to only apply this at extreme heights
-                        if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
+                        float velocity = __instance.forces.magnitude;
+                        if (velocity > MIN_DEATH_SPEED)
                         {
-                            __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
-                            if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
-                                Plugin.Logger.LogDebug("Player killed from flying too fast");
-                            else
-                                Plugin.Logger.LogDebug($"Player killed from flying too fast while too high (Altitude: {__instance.transform.position.y} > {SAFE_HEIGHT})");
-                        }
-                        // Kills the player if they try to slide across the ground while moving too fast
-                        // (This is still a collision taking place while moving at instant-death speeds)
-                        else if (__instance.playerHeldBy.thisController.isGrounded)
-                        {
-                            __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
-                            Plugin.Logger.LogDebug("Player killed from touching ground while flying too fast");
+                            // Kills the player at excessive speed. Basically replicates vanilla's behavior (with less physics jank)
+                            // NEW: Config setting to only apply this at extreme heights
+                            if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
+                            {
+                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
+                                if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
+                                    Plugin.Logger.LogDebug("Player killed from flying too fast");
+                                else
+                                    Plugin.Logger.LogDebug($"Player killed from flying too fast while too high (Altitude: {__instance.transform.position.y} > {SAFE_HEIGHT})");
+                            }
+                            // Kills the player if they try to slide across the ground while moving too fast
+                            // (This is still a collision taking place while moving at instant-death speeds)
+                            else if (__instance.playerHeldBy.thisController.isGrounded)
+                            {
+                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
+                                Plugin.Logger.LogDebug("Player killed from touching ground while flying too fast");
+                            }
                         }
                     }
-                }
 
-                // check again, in case player was killed above
-                if (__instance.playerHeldBy != null)
-                {
-                    // Regain full directional control when activating jetpack after tulip snake takeoff
-                    if (__instance.playerHeldBy.maxJetpackAngle >= 0f && __instance.playerHeldBy.maxJetpackAngle < 360f)
+                    // check again, in case player was killed above
+                    if (__instance.playerHeldBy != null)
                     {
-                        __instance.playerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
-                        __instance.playerHeldBy.jetpackRandomIntensity = 60f; //0f;
-                        Plugin.Logger.LogDebug("Uncap player rotation (using jetpack while tulip snakes riding)");
-                    }
+                        // Regain full directional control when activating jetpack after tulip snake takeoff
+                        if (__instance.playerHeldBy.maxJetpackAngle >= 0f && __instance.playerHeldBy.maxJetpackAngle < 360f)
+                        {
+                            __instance.playerHeldBy.maxJetpackAngle = float.MaxValue; //-1f;
+                            __instance.playerHeldBy.jetpackRandomIntensity = 60f; //0f;
+                            Plugin.Logger.LogDebug("Uncap player rotation (using jetpack while tulip snakes riding)");
+                        }
 
-                    // Stop moving with the landing ship if you take off early in the day
-                    if (__instance.playerHeldBy.isInElevator && __instance.playerHeldBy.transform.parent == StartOfRound.Instance.elevatorTransform && StartOfRound.Instance.shipDoorsEnabled && __instance.playerHeldBy.parentedToElevatorLastFrame && !StartOfRound.Instance.shipBounds.bounds.Contains(__instance.transform.position))
-                    {
-                        __instance.playerHeldBy.parentedToElevatorLastFrame = false;
-                        __instance.playerHeldBy.isInElevator = false;
-                        __instance.playerHeldBy.isInHangarShipRoom = false;
-                        __instance.playerHeldBy.transform.SetParent(StartOfRound.Instance.playersContainer);
-                        Plugin.Logger.LogDebug("Player flew off of ship, change parent off the ship");
+                        // Stop moving with the landing ship if you take off early in the day
+                        if (__instance.playerHeldBy.isInElevator && __instance.playerHeldBy.transform.parent == StartOfRound.Instance.elevatorTransform && StartOfRound.Instance.shipDoorsEnabled && __instance.playerHeldBy.parentedToElevatorLastFrame && !StartOfRound.Instance.shipBounds.bounds.Contains(__instance.transform.position))
+                        {
+                            __instance.playerHeldBy.parentedToElevatorLastFrame = false;
+                            __instance.playerHeldBy.isInElevator = false;
+                            __instance.playerHeldBy.isInHangarShipRoom = false;
+                            __instance.playerHeldBy.transform.SetParent(StartOfRound.Instance.playersContainer);
+                            Plugin.Logger.LogDebug("Player flew off of ship, change parent off the ship");
+                        }
                     }
                 }
             }
@@ -240,15 +241,7 @@ namespace JetpackFixes
             }
         }
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.EquipItem))]
-        [HarmonyPostfix]
-        static void JetpackItem_Post_EquipItem(JetpackItem __instance)
-        {
-            // hopefully fix the jetpack not responding to inputs
-            __instance.useCooldown = 0f;
-        }
-
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.DeactivateJetpack))]
+        [HarmonyPatch(nameof(JetpackItem.DeactivateJetpack))]
         [HarmonyPostfix]
         static void JetpackItem_Post_DeactivateJetpack(JetpackItem __instance)
         {
@@ -344,19 +337,14 @@ namespace JetpackFixes
             flowerSnakeEnemy = null;
         }
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.DiscardItem))]
+        [HarmonyPatch(nameof(JetpackItem.DiscardItem))]
         [HarmonyPostfix]
         static void JetpackItem_Post_DiscardItem(JetpackItem __instance)
         {
-            if (Plugin.configTransferMomentum.Value && !__instance.previousPlayerHeldBy.isPlayerDead && __instance.previousPlayerHeldBy.jetpackControls && __instance.forces.magnitude > 0f)
-            {
-                __instance.previousPlayerHeldBy.externalForceAutoFade += new Vector3(__instance.forces.x, __instance.forces.y * __instance.verticalMultiplier, __instance.forces.z);
-                Plugin.Logger.LogDebug("Player dropped jetpack while flying, fling them!");
-            }
             __instance.forces = Vector3.zero;
         }
 
-        [HarmonyPatch(typeof(JetpackItem), nameof(JetpackItem.SetJetpackAudios))]
+        [HarmonyPatch(nameof(JetpackItem.SetJetpackAudios))]
         [HarmonyPrefix]
         static bool JetpackItem_SetJetpackAudios(JetpackItem __instance)
         {
@@ -407,6 +395,31 @@ namespace JetpackFixes
                 __instance.jetpackBeepsAudio.Stop();
 
             return false;
+        }
+
+        [HarmonyPatch(nameof(JetpackItem.JetpackEffect))]
+        [HarmonyTranspiler]
+        static IEnumerable<CodeInstruction> JetpackItem_Trans_JetpackEffect(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
+        {
+            List<CodeInstruction> codes = instructions.ToList();
+            Label label = generator.DefineLabel();
+
+            MethodInfo shakeCamera = AccessTools.Method(typeof(HUDManager), nameof(HUDManager.ShakeCamera));
+            for (int i = 2; i < codes.Count - 1; i++)
+            {
+                if (codes[i].opcode == OpCodes.Callvirt && codes[i].operand as MethodInfo == shakeCamera)
+                {
+                    codes[i + 1].labels.Add(label);
+                    codes.InsertRange(i - 2, [
+                        new(OpCodes.Ldarg_1),
+                        new(OpCodes.Brfalse, label)
+                    ]);
+                    Plugin.Logger.LogDebug("Transpiler: No shake when disabling jetpack");
+                    return codes;
+                }
+            }
+
+            return codes;
         }
     }
 }
