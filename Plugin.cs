@@ -24,7 +24,7 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.1";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.2";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -51,19 +51,19 @@ namespace JetpackFixes
             configMidAirExplosions = Config.Bind(
                 "Misc",
                 "MidAirExplosions",
-                MidAirExplosions.OnlyTooHigh,
+                MidAirExplosions.Off,
                 "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
                 "\"Off\" will only explode when you crash into something solid.\n" +
                 "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain.\n" +
                 "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
 
             // migrate legacy config
-            if (configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh)
+            if (configMidAirExplosions.Value == MidAirExplosions.Off)
             {
-                bool becomeFirework = Config.Bind("Misc", "BecomeFirework", true, "Legacy setting, use \"MidAirExplosions\" instead").Value;
+                bool becomeFirework = Config.Bind("Misc", "BecomeFirework", false, "Legacy setting, use \"MidAirExplosions\" instead").Value;
 
-                if (!becomeFirework)
-                    configMidAirExplosions.Value = MidAirExplosions.Off;
+                if (becomeFirework)
+                    configMidAirExplosions.Value = MidAirExplosions.OnlyTooHigh;
 
                 Config.Remove(Config["Misc", "BecomeFirework"].Definition);
             }
@@ -89,6 +89,18 @@ namespace JetpackFixes
         const float MAX_DEATH_SPEED = MIN_DEATH_SPEED + 4f;
 
         static EnemyType flowerSnakeEnemy;
+
+        static HangarShipDoor hangarShipDoor;
+        internal static HangarShipDoor HangarShipDoor
+        {
+            get
+            {
+                if (hangarShipDoor == null)
+                    hangarShipDoor = Object.FindAnyObjectByType<HangarShipDoor>();
+
+                return hangarShipDoor;
+            }
+        }
 
         [HarmonyPatch(nameof(JetpackItem.Update))]
         [HarmonyTranspiler]
@@ -151,7 +163,7 @@ namespace JetpackFixes
             if (__instance.playerHeldBy == GameNetworkManager.Instance.localPlayerController && !__instance.playerHeldBy.isPlayerDead)
             {
                 // hopefully fix the jetpack not responding to inputs
-                __instance.useCooldown = StartOfRound.Instance.inShipPhase ? 0.3f : 0f;
+                __instance.useCooldown = (StartOfRound.Instance.inShipPhase || (HangarShipDoor != null && !HangarShipDoor.buttonsEnabled)) ? 0.3f : 0f;
 
                 if (__instance.jetpackActivated && __instance.playerHeldBy.jetpackControls)
                 {
