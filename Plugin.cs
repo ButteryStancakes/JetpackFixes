@@ -24,7 +24,7 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.2";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.3";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
@@ -114,7 +114,9 @@ namespace JetpackFixes
                       rayHit = AccessTools.Field(typeof(JetpackItem), nameof(JetpackItem.rayHit)),
                       allPlayersCollideWithMask = AccessTools.Field(typeof(StartOfRound), nameof(StartOfRound.allPlayersCollideWithMask));
 
-            for (int i = 1; i < codes.Count - 3; i++)
+            MethodInfo killPlayer = AccessTools.Method(typeof(PlayerControllerB), nameof(PlayerControllerB.KillPlayer));
+
+            for (int i = 6; i < codes.Count - 3; i++)
             {
                 // The player gets locked in place if jetpackPower > 10 and they touch the ground.
                 // I think the intention was that the player stays grounded until jetpackPower is greater than 10,
@@ -148,6 +150,13 @@ namespace JetpackFixes
                     codes.RemoveAt(i - 1);
                     Plugin.Logger.LogDebug("Transpiler: Replace layer mask with custom");
                 }
+                // Change "Gravity" death to "Inertia"
+                else if (codes[i].opcode == OpCodes.Callvirt && codes[i].operand as MethodInfo == killPlayer && codes[i - 6].opcode == OpCodes.Ldc_I4_2)
+                {
+                    codes[i - 6].opcode = OpCodes.Ldc_I4_S;
+                    codes[i - 6].operand = (sbyte)16;
+                    Plugin.Logger.LogDebug("Transpiler: Replace \"Gravity\" with \"Inertia\"");
+                }
             }
 
             return codes;
@@ -176,7 +185,7 @@ namespace JetpackFixes
                             // NEW: Config setting to only apply this at extreme heights
                             if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
                             {
-                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
+                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Blast); // Gravity
                                 if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
                                     Plugin.Logger.LogDebug("Player killed from flying too fast");
                                 else
@@ -186,7 +195,7 @@ namespace JetpackFixes
                             // (This is still a collision taking place while moving at instant-death speeds)
                             else if (__instance.playerHeldBy.thisController.isGrounded)
                             {
-                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Gravity);
+                                __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Inertia); // Gravity
                                 Plugin.Logger.LogDebug("Player killed from touching ground while flying too fast");
                             }
                         }
@@ -246,9 +255,9 @@ namespace JetpackFixes
         static void PlayerControllerB_Pre_DamagePlayer(PlayerControllerB __instance, ref int damageNumber, CauseOfDeath causeOfDeath)
         {
             // Player crashed into something while travelling at a speed past the intended instant-death threshold
-            if (causeOfDeath == CauseOfDeath.Gravity && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED)
+            if (causeOfDeath == CauseOfDeath.Inertia && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED) // Gravity
             {
-                Plugin.Logger.LogInfo($"Player took {damageNumber} \"Gravity\" damage while flying too fast; should be instant death");
+                Plugin.Logger.LogInfo($"Player took {damageNumber} \"Inertia\" damage while flying too fast; should be instant death"); // Gravity
                 damageNumber = Mathf.Max(100, __instance.health);
             }
         }
@@ -428,6 +437,29 @@ namespace JetpackFixes
                     ]);
                     Plugin.Logger.LogDebug("Transpiler: No shake when disabling jetpack");
                     return codes;
+                }
+            }
+
+            return codes;
+        }
+
+        [HarmonyPatch(typeof(PlayerControllerB), nameof(PlayerControllerB.Update))]
+        [HarmonyTranspiler]
+        static IEnumerable<CodeInstruction> PlayerControllerB_Trans_Update(IEnumerable<CodeInstruction> instructions)
+        {
+            List<CodeInstruction> codes = instructions.ToList();
+
+            MethodInfo damagePlayer = AccessTools.Method(typeof(PlayerControllerB), nameof(PlayerControllerB.DamagePlayer));
+            FieldInfo velocityLastFrame = AccessTools.Field(typeof(PlayerControllerB), nameof(PlayerControllerB.velocityLastFrame));
+
+            for (int i = 7; i < codes.Count; i++)
+            {
+                // Change "Gravity" death to "Inertia"
+                if (codes[i].opcode == OpCodes.Call && codes[i].operand as MethodInfo == damagePlayer && codes[i - 7].opcode == OpCodes.Ldc_I4_2 && codes[i - 3].opcode == OpCodes.Ldfld && (FieldInfo)codes[i - 3].operand == velocityLastFrame)
+                {
+                    codes[i - 7].opcode = OpCodes.Ldc_I4_S;
+                    codes[i - 7].operand = (sbyte)16;
+                    Plugin.Logger.LogDebug("Transpiler: Replace \"Gravity\" with \"Inertia\"");
                 }
             }
 
