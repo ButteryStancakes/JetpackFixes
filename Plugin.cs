@@ -154,7 +154,7 @@ namespace JetpackFixes
                 else if (codes[i].opcode == OpCodes.Callvirt && codes[i].operand as MethodInfo == killPlayer && codes[i - 6].opcode == OpCodes.Ldc_I4_2)
                 {
                     codes[i - 6].opcode = OpCodes.Ldc_I4_S;
-                    codes[i - 6].operand = (sbyte)16;
+                    codes[i - 6].operand = (sbyte)CauseOfDeath.Inertia;
                     Plugin.Logger.LogDebug("Transpiler: Replace \"Gravity\" with \"Inertia\"");
                 }
             }
@@ -458,7 +458,7 @@ namespace JetpackFixes
                 if (codes[i].opcode == OpCodes.Call && codes[i].operand as MethodInfo == damagePlayer && codes[i - 7].opcode == OpCodes.Ldc_I4_2 && codes[i - 3].opcode == OpCodes.Ldfld && (FieldInfo)codes[i - 3].operand == velocityLastFrame)
                 {
                     codes[i - 7].opcode = OpCodes.Ldc_I4_S;
-                    codes[i - 7].operand = (sbyte)16;
+                    codes[i - 7].operand = (sbyte)CauseOfDeath.Inertia;
                     Plugin.Logger.LogDebug("Transpiler: Replace \"Gravity\" with \"Inertia\"");
                 }
             }
