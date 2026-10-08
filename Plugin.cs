@@ -14,9 +14,10 @@ namespace JetpackFixes
 {
     enum MidAirExplosions
     {
-        Off = -1,
+        Off,
         OnlyTooHigh,
-        Always
+        Always,
+        DontChange = -1
     }
 
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
@@ -24,13 +25,13 @@ namespace JetpackFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.3";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.jetpackfixes", PLUGIN_NAME = "Jetpack Fixes", PLUGIN_VERSION = "1.6.4";
         internal static new ManualLogSource Logger;
 
         internal static ConfigEntry<MidAirExplosions> configMidAirExplosions;
 
         const string GUID_JETPACK_WARNING = "JetpackWarning", GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
-        internal static bool DISABLE_BEEP_PATCH;
+        internal static bool DISABLE_BEEP_PATCH, DISABLE_EXPLOSION_PATCHES;
 
         void Awake()
         {
@@ -54,8 +55,9 @@ namespace JetpackFixes
                 MidAirExplosions.Off,
                 "When should high speeds (exceeding 50u/s, vanilla's \"speed limit\") explode the jetpack?\n" +
                 "\"Off\" will only explode when you crash into something solid.\n" +
-                "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain.\n" +
-                "\"Always\" will explode any time you are flying too fast. (Most similar to vanilla's behavior)");
+                "\"OnlyTooHigh\" will explode if you are flying too fast, while you are also *extremely* high above the terrain, and traveling mostly upwards.\n" +
+                "\"Always\" will explode any time you are flying too fast.\n" +
+                "\"DontChange\" retains vanilla's broken original behavior (REQUIRES RESTART)");
 
             // migrate legacy config
             if (configMidAirExplosions.Value == MidAirExplosions.Off)
@@ -70,6 +72,8 @@ namespace JetpackFixes
             Config.Bind("Misc", "TransferMomentum", false, "Legacy setting, doesn't work");
             Config.Remove(Config["Misc", "TransferMomentum"].Definition);
             Config.Save();
+
+            DISABLE_EXPLOSION_PATCHES = Plugin.configMidAirExplosions.Value == MidAirExplosions.DontChange;
 
             new Harmony(PLUGIN_GUID).PatchAll();
 
@@ -106,7 +110,7 @@ namespace JetpackFixes
         [HarmonyTranspiler]
         static IEnumerable<CodeInstruction> JetpackItem_Trans_Update(IEnumerable<CodeInstruction> instructions)
         {
-            List<CodeInstruction> codes = instructions.ToList();
+            List <CodeInstruction> codes = instructions.ToList();
 
             LayerMask jetpackMask = (1 << LayerMask.NameToLayer("Room")) | (1 << LayerMask.NameToLayer("Colliders")) | (1 << LayerMask.NameToLayer("Terrain"));
 
@@ -130,6 +134,9 @@ namespace JetpackFixes
                 // Reduce range of raycast (and remove redundancy with distance check)
                 else if (codes[i].opcode == OpCodes.Ldflda && (FieldInfo)codes[i].operand == rayHit)
                 {
+                    if (Plugin.DISABLE_EXPLOSION_PATCHES)
+                        continue;
+
                     if (codes[i + 1].opcode == OpCodes.Ldc_R4 && (float)codes[i + 1].operand == 25f)
                     {
                         codes[i + 1].operand = 4f;
@@ -145,6 +152,9 @@ namespace JetpackFixes
                 // Replace raycast layer with the new layer mask (prevents player from colliding with self)
                 else if (codes[i].opcode == OpCodes.Ldfld && (FieldInfo)codes[i].operand == allPlayersCollideWithMask)
                 {
+                    if (Plugin.DISABLE_EXPLOSION_PATCHES)
+                        continue;
+
                     codes[i].opcode = OpCodes.Ldc_I4;
                     codes[i].operand = (int)jetpackMask;
                     codes.RemoveAt(i - 1);
@@ -176,14 +186,14 @@ namespace JetpackFixes
 
                 if (__instance.jetpackActivated && __instance.playerHeldBy.jetpackControls)
                 {
-                    if (__instance.jetpackPower > 10f)
+                    if (!Plugin.DISABLE_EXPLOSION_PATCHES && __instance.jetpackPower > 10f)
                     {
                         float velocity = __instance.forces.magnitude;
                         if (velocity > MIN_DEATH_SPEED)
                         {
                             // Kills the player at excessive speed. Basically replicates vanilla's behavior (with less physics jank)
-                            // NEW: Config setting to only apply this at extreme heights
-                            if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT)))
+                            // NEW: Config setting to only apply this at extreme heights now also checks for upward momentum
+                            if (velocity > MAX_DEATH_SPEED && (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always || (Plugin.configMidAirExplosions.Value == MidAirExplosions.OnlyTooHigh && __instance.transform.position.y > SAFE_HEIGHT && __instance.forces.y > MAX_DEATH_SPEED)))
                             {
                                 __instance.playerHeldBy.KillPlayer(__instance.forces, true, CauseOfDeath.Blast); // Gravity
                                 if (Plugin.configMidAirExplosions.Value == MidAirExplosions.Always)
@@ -255,7 +265,7 @@ namespace JetpackFixes
         static void PlayerControllerB_Pre_DamagePlayer(PlayerControllerB __instance, ref int damageNumber, CauseOfDeath causeOfDeath)
         {
             // Player crashed into something while travelling at a speed past the intended instant-death threshold
-            if (causeOfDeath == CauseOfDeath.Inertia && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED) // Gravity
+            if (!Plugin.DISABLE_EXPLOSION_PATCHES && causeOfDeath == CauseOfDeath.Inertia && __instance == GameNetworkManager.Instance.localPlayerController && __instance.jetpackControls && __instance.averageVelocity >= MIN_DEATH_SPEED) // Gravity
             {
                 Plugin.Logger.LogInfo($"Player took {damageNumber} \"Inertia\" damage while flying too fast; should be instant death"); // Gravity
                 damageNumber = Mathf.Max(100, __instance.health);
